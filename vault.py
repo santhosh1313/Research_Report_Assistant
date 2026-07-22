@@ -33,10 +33,13 @@ class Vault:
         self.subtasks = []
         self.facts = []
 
-
         # ChromaDB
         self.vector_store = None
 
+        # # Retrieval
+        # self.current_query = ""
+        # self.retrieved_chunks = []
+        # self.retrieval_k = 5
 
         # Outputs
         self.synthesis = None
