@@ -33,23 +33,29 @@ def synthesizer_run(vault):
         Content:\n{facts_text[:6000]}"""
 
     else:  # multi_doc
-        if vault.vector_store is None:
-            raise SynthesizerError("No vector store available for multi-doc synthesis — Harvester step likely failed")
-
         dims = "\n".join(vault.subtasks)
-        try:
-            retrieved = vault.vector_store.similarity_search(dims, k=8)
-        except Exception as e:
-            raise SynthesizerError(f"ChromaDB similarity_search failed: {e}") from e
 
-        if not retrieved:
-            raise SynthesizerError("similarity_search returned no chunks for the comparison dimensions")
+        context = vault.multi_doc_text
 
-        context = "\n".join([f"- {d.page_content[:300]} (Source: {d.metadata['source']})" for d in retrieved])
-        prompt = f"""Compare the following paper excerpts across these dimensions:
+        prompt = f"""
+        Compare the following research papers across these dimensions:
+
         {dims}
-        Identify agreements, contradictions, and gaps across papers.
-        Excerpts:\n{context}"""
+
+        Research Papers:
+        {context}
+
+        Identify:
+
+        - Similarities
+        - Differences
+        - Contradictions
+        - Strengths
+        - Weaknesses
+        - Research gaps
+
+        Mention the paper names whenever possible.
+        """
 
     try:
         response = llm.invoke(prompt)

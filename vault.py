@@ -34,7 +34,7 @@ class Vault:
         self.facts = []
 
         # ChromaDB
-        self.vector_store = None
+        # self.vector_store = None
 
         # # Retrieval
         # self.current_query = ""

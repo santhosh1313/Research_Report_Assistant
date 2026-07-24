@@ -3,9 +3,9 @@ from tavily import TavilyClient
 from dotenv import load_dotenv
 import fitz  # PyMuPDF
 import os
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_chroma import Chroma
+# from langchain_google_genai import GoogleGenerativeAIEmbeddings
+# from langchain_text_splitters import RecursiveCharacterTextSplitter
+# from langchain_chroma import Chroma
 
 load_dotenv()
 
@@ -15,16 +15,16 @@ tavily = TavilyClient(
 )
 
 # Gemini Embeddings
-embeddings = GoogleGenerativeAIEmbeddings(
-    model="models/gemini-embedding-2",
-    google_api_key=os.getenv("GOOGLE_API_KEY")
-)
+# embeddings = GoogleGenerativeAIEmbeddings(
+#     model="models/gemini-embedding-2",
+#     google_api_key=os.getenv("GOOGLE_API_KEY")
+# )
 
-# Text Splitter
-splitter = RecursiveCharacterTextSplitter(
-    chunk_size=1000,
-    chunk_overlap=100
-)
+# # Text Splitter
+# splitter = RecursiveCharacterTextSplitter(
+#     chunk_size=1000,
+#     chunk_overlap=100
+# )
 
 
 class HarvesterError(Exception):
@@ -33,20 +33,20 @@ class HarvesterError(Exception):
 
 
 # Common Vector DB function for all modes
-def save_to_vector_db(texts, metadatas):
-    if not texts:
-        raise ValueError("No text found to store in Vector DB")
-    try:
-        vector_store = Chroma.from_texts(
-            texts=texts,
-            embedding=embeddings,
-            metadatas=metadatas,
-            persist_directory="./chroma_db",
-            collection_name="research_assistant"
-        )
-    except Exception as e:
-        raise HarvesterError(f"Failed to write to ChromaDB: {e}") from e
-    return vector_store
+# def save_to_vector_db(texts, metadatas):
+#     if not texts:
+#         raise ValueError("No text found to store in Vector DB")
+#     try:
+#         vector_store = Chroma.from_texts(
+#             texts=texts,
+#             embedding=embeddings,
+#             metadatas=metadatas,
+#             persist_directory="./chroma_db",
+#             collection_name="research_assistant"
+#         )
+#     except Exception as e:
+#         raise HarvesterError(f"Failed to write to ChromaDB: {e}") from e
+#     return vector_store
 
 
 # =================================================
@@ -104,14 +104,11 @@ def harvester_web_search(vault):
             f"({len(failed_queries)} query calls failed outright)"
         )
 
-    vault.vector_store = save_to_vector_db(
-        texts,
-        metadatas
-    )
+    vault.web_results = texts
+
     print(
-        f"[Harvester] Stored {len(texts)} web results in ChromaDB"
-        + (f" ({len(failed_queries)} queries failed)" if failed_queries else "")
-    )
+        f"[Harvester] Collected {len(texts)} web results")
+
 
 
 # =================================================
@@ -158,12 +155,10 @@ def harvester_parse_single(vault):
     if not texts:
         raise HarvesterError(f"No extractable text found in '{path}' — file may be a scanned image PDF")
 
-    vault.vector_store = save_to_vector_db(
-        texts,
-        metadatas
-    )
+    vault.document_text = full_text
+
     print(
-        f"[Harvester] Stored {len(texts)} PDF pages in ChromaDB"
+        f"[Harvester] Extracted {len(texts)} pages"
     )
     return full_text
 
@@ -195,15 +190,9 @@ def harvester_embed_multi(vault):
             skipped_files.append(path)
             continue
 
-        chunks = splitter.split_text(full_text)
-        for chunk in chunks:
-            texts.append(chunk)
-            metadatas.append(
-                {
-                    "source": path,
-                    "mode": "multi_document"
-                }
-            )
+        texts.append(
+            f"\n\n===== {os.path.basename(path)} =====\n\n{full_text}"
+        )
 
     if not texts:
         raise HarvesterError(
@@ -211,13 +200,10 @@ def harvester_embed_multi(vault):
             f"(skipped: {skipped_files})"
         )
 
-    vault.vector_store = save_to_vector_db(
-        texts,
-        metadatas
-    )
+    vault.multi_doc_text = "\n\n".join(texts)
+
     print(
-        f"[Harvester] Stored {len(texts)} chunks "
-        f"from {len(vault.input_data)} papers in ChromaDB"
-        + (f" ({len(skipped_files)} files skipped)" if skipped_files else "")
+        f"[Harvester] Parsed {len(texts)} documents"
     )
-    return vault.vector_store
+
+    return vault.multi_doc_text
