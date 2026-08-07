@@ -52,6 +52,20 @@ llm = ChatGroq(
 FOLLOW_UP_MEMORY_THRESHOLD = 0.5
 FOLLOW_UP_MEMORY_K = 5
 
+# How much of each recalled memory snippet to include in the prompt.
+CONTEXT_SNIPPET_CHAR_LIMIT = 800
+
+# How many recent chat turns to include for conversational continuity.
+RECENT_HISTORY_TURNS = 6
+# Older turns get a modest allowance...
+OLDER_TURN_CHAR_LIMIT = 1000
+# ...but the single most recent turn gets a generous one. Follow-ups very
+# often refer directly to "the above" / "that report" — i.e. the last
+# thing said, not something semantic search happens to score highly. A
+# full research report can run 5,000-8,000+ characters, so a small limit
+# here silently cuts off the exact content being asked about.
+LAST_TURN_CHAR_LIMIT = 8000
+
 # Typing one of these prefixes mid-conversation forces a fresh research run
 # instead of a follow-up answer, e.g. "research: quantum computing".
 RESEARCH_TRIGGER_PREFIXES = ("research:", "topic:", "analyze:")
@@ -159,12 +173,17 @@ def _answer_follow_up(user_id, session_id, message, prior_history):
                 for t, m in zip(fallback_texts, fallback_metadatas)
             ]
 
-    context_parts = [f"- (earlier in this chat) {h['content'][:400]}" for h in convo_hits]
-    context_parts += [f"- (research memory, source: {h['source']}) {h['text'][:400]}" for h in research_hits]
-    context_block = "\n".join(context_parts) if context_parts else "No directly relevant prior context found."
+    context_parts = [f"- (earlier in this chat) {h['content'][:CONTEXT_SNIPPET_CHAR_LIMIT]}" for h in convo_hits]
+    context_parts += [f"- (research memory, source: {h['source']}) {h['text'][:CONTEXT_SNIPPET_CHAR_LIMIT]}" for h in research_hits]
+    context_block = "\n".join(context_parts) if context_parts else "No directly relevant prior context found via semantic search."
 
-    recent_turns = prior_history[-6:]
-    history_block = "\n".join(f"{t['role']}: {t['content'][:300]}" for t in recent_turns) or "(no earlier messages)"
+    recent_turns = prior_history[-RECENT_HISTORY_TURNS:]
+    history_lines = []
+    for i, turn in enumerate(recent_turns):
+        is_most_recent = (i == len(recent_turns) - 1)
+        char_limit = LAST_TURN_CHAR_LIMIT if is_most_recent else OLDER_TURN_CHAR_LIMIT
+        history_lines.append(f"{turn['role']}: {turn['content'][:char_limit]}")
+    history_block = "\n".join(history_lines) or "(no earlier messages)"
 
     fallback_note = " (a live web search was also run since memory had nothing relevant)" if used_fallback else ""
     prompt = f"""You are a helpful research assistant continuing an ongoing conversation.
