@@ -1,221 +1,208 @@
 # Multi-Agent Research & Report Assistant
 
-A multi-agent AI system that turns either a **research topic** or a **set of research papers** into a polished, structured, citation-backed report — built entirely with free-tier tools as a capstone project for **Infosys Springboard 7.0**.
+A multi-agent AI system that researches a topic, summarizes a single paper, or compares
+multiple papers into a literature review — built as a capstone project for **Infosys
+Springboard 7.0**, categorized under **AI Coordination & Decision Engine**.
 
-Five specialized agents are orchestrated with **LangGraph**, coordinated through a single shared memory object (**Vault**) that is passed through the pipeline end to end.
+The system runs entirely on **free-tier services** (Groq, Google Gemini, Tavily, ChromaDB,
+SQLite) — no paid infrastructure required.
 
----
-
-## Table of Contents
-
-- [Overview](#overview)
-- [Operating Modes](#operating-modes)
-- [Architecture](#architecture)
-- [Agents](#agents)
-- [Tech Stack](#tech-stack)
-- [Project Structure](#project-structure)
-- [Setup](#setup)
-- [Environment Variables](#environment-variables)
-- [Usage](#usage)
-- [Output Format](#output-format)
-- [Roadmap](#roadmap)
-- [Acknowledgements](#acknowledgements)
+Two ways to use it:
+- **CLI** (`main.py`) — one-shot: give it a topic or PDFs, get a report.
+- **Chat app** (`app.py`, Streamlit) — a ChatGPT-style conversational interface with
+  accounts, persistent conversations, and follow-up Q&A.
 
 ---
 
-## Overview
+## How it works
 
-Given either **(a)** a topic to research, or **(b)** one or more research papers, the system produces a polished, structured report using a mode-appropriate template.
+Five specialized agents, each with one job, coordinated through a shared memory object
+called **Vault** and orchestrated with **LangGraph**:
 
-A coordinator agent (`Atlas`) inspects the input and routes it to the correct pipeline. All three paths converge on the same final stage — a well-structured report drafted by `Scribe`.
+| Agent | Role |
+|---|---|
+| **Atlas** | Detects the mode (topic / single document / multiple documents) and routes the run |
+| **Pathfinder** | Plans the work — breaks a topic into sub-questions, or picks comparison dimensions for papers |
+| **Harvester** | Gathers material — live web search (Tavily), PDF parsing (PyMuPDF), or multi-document parsing |
+| **Synthesizer** | Analyzes and synthesizes the gathered material into themes, findings, and comparisons |
+| **Scribe** | Writes the final structured report |
 
-## Operating Modes
+### Three modes
 
-| Mode | Trigger | What it does |
-|---|---|---|
-| **Topic Mode** | A topic string is provided | Performs live web research (Tavily) and synthesizes findings into a themed, cited report |
-| **Single-Doc Mode** | One PDF is provided | Produces a structured summary of the paper — overview, methodology, contributions, results, and an internal-consistency check (no comparison) |
-| **Multi-Doc Mode** | Two or more PDFs are provided | Chunks & embeds every paper, retrieves relevant content per comparison dimension, and produces a literature-review-style comparison |
+- **Topic Mode** — Pathfinder generates sub-questions, Harvester searches the live web via
+  Tavily, Synthesizer builds themes from the results.
+- **Single-Doc Mode** — Harvester extracts text per page with PyMuPDF, Synthesizer pulls out
+  methodology/findings/limitations from one paper.
+- **Multi-Doc Mode** — Harvester parses every document, Synthesizer produces a comparative
+  literature review across all of them.
 
-Mode detection is automatic, based on the shape of the input (`atlas.py`):
+---
 
-```python
-str            -> "topic"
-[one path]     -> "single_doc"
-[many paths]   -> "multi_doc"
-```
+## Agent coordination & memory
 
-## Architecture
+This project treats "agents talking to each other" and "agents remembering things" as two
+distinct systems, both visible and testable rather than implicit:
 
-```
-User Input (topic string OR PDF path[s])
-        │
-        ▼
-     Atlas ──────────────┐   (detects mode, routes pipeline)
-        │                │
-        ▼                │
-   Pathfinder             │   (plans sub-questions / comparison dimensions)
-        │                │
-        ▼                │
-   Harvester ◄────────────┤   (mode-specific retrieval)
-   ├─ Topic:      Tavily web search
-   ├─ Single-Doc: PyMuPDF parse (1 file)
-   └─ Multi-Doc:  chunk + embed (Gemini Embeddings) into a vector store
-        │                │
-        ▼                │
-  Synthesizer ◄───────────┤   (synthesizes themes / comparisons, Gemini 2.5-flash)
-        │                │
-        ▼                │
-     Scribe ◄─────────────┘   (drafts final report, Groq)
-        │
-        ▼
-   Final Report
+**Coordination.** Every agent logs a handoff to `vault.comm_log` when it passes work to the
+next agent (e.g. `Pathfinder -> Harvester: plan_ready`). After each CLI run,
+`workflow_validator.py` checks that the expected agent sequence
+(Atlas → Pathfinder → Harvester → Synthesizer → Scribe) actually happened, and saves a
+`*_trace.json` file with the full handoff log and a PASS/FAIL summary — demonstrable proof
+of collaborative execution, not just console prints.
 
-        ▲▲▲▲▲
-        │││││
-      VAULT — shared runtime memory (GraphState)
-      every agent above reads from / writes to it
-```
+**Memory** is split into two clearly separated systems:
 
-`Vault` is **not an agent** — it's the shared storage layer (mode, input data, planned subtasks, logged facts with sources, synthesis output, final report) that every LangGraph node reads from and writes to. It's what prevents hallucinated citations: every fact `Harvester` pulls is logged with its source, so `Synthesizer` and `Scribe` only ever cite what was actually retrieved.
+- **Short-term (Vault)** — run-scoped, in-memory, cleared after every run. Holds the current
+  subtasks, gathered facts, synthesis, and final report.
+- **Long-term (ChromaDB)** — persists across runs and processes. Two collections live in the
+  same on-disk store (`./chroma_db`):
+  - `research_assistant` — raw research facts (web results, paper text), **shared across all
+    users**. Harvester checks this before running a fresh Tavily search — if it already has a
+    highly relevant result for a sub-question, it reuses it instead of spending a search call.
+    Synthesizer also queries it to fold relevant findings from *past* runs into a new report.
+  - `conversation_history` — chat turns from the Streamlit app, scoped per `user_id` +
+    `session_id` so conversations stay private between users.
 
-## Agents
+---
 
-| Agent | Role | Responsibility | Model / Tool |
-|---|---|---|---|
-| **Atlas** | Coordinator | Detects input type and routes the pipeline to the correct mode | Pure Python (mode-routing logic) |
-| **Pathfinder** | Planner | Breaks a topic into sub-questions, or outlines comparison dimensions for documents | Groq · `llama-3.1-8b-instant` |
-| **Harvester** | Researcher | Runs web search, parses a PDF, or chunks & embeds documents, depending on mode | Tavily · PyMuPDF · Gemini Embeddings |
-| **Synthesizer** | Analyst | Synthesizes findings into themes, flags contradictions and research gaps | Gemini `2.5-flash` |
-| **Scribe** | Writer | Drafts the final structured, citation-backed report from a mode-specific template | Groq · `llama-3.1-8b-instant` |
+## The conversational app
 
-The hybrid dual-provider strategy (Groq for planning/writing, Gemini for retrieval-heavy reasoning and embeddings) keeps the pipeline fast and comfortably inside both providers' free-tier limits.
+`app.py` wraps the same five agents in a chat interface:
 
-## Tech Stack
+- **Accounts** (`auth_db.py`, SQLite) — registration and login with PBKDF2-hashed passwords
+  (no plaintext, no extra dependency). Login persists across a page refresh via a session
+  token stored in the URL and validated against a `sessions` table.
+- **Conversations** — each chat is a row in SQLite (title, timestamps, pinned flag) plus its
+  full message history in ChromaDB. The sidebar lists a user's conversations, pinned ones
+  first, each with a **⋮** menu for rename / pin / delete (deleting a chat cleans up both the
+  SQLite record and its ChromaDB history).
+- **Orchestration** (`orchestrator.py`) — a plain Python session loop (not a LangGraph node —
+  a chat loop doesn't need graph cycles). Per message, it decides:
+  - **First message in a conversation**, or a message prefixed with `research:` / `topic:` /
+    `analyze:` → runs the full Atlas → Scribe pipeline.
+  - **Everything else** → answered as a follow-up: ChromaDB first (this user's conversation
+    history + the shared research memory), Tavily only as a fallback if memory has nothing
+    relevant. The most recent turn in the conversation is given generous room (up to 8,000
+    characters) rather than being aggressively truncated, since follow-ups often refer
+    directly to "the above" report.
+- **Attachments** — the chat bar uses Streamlit's native `+` file-attach button
+  (`st.chat_input(accept_file="multiple")`) for PDFs, one bar for everything, no separate
+  upload section.
+- **Theme** — a custom light theme (`.streamlit/config.toml`) instead of the Streamlit
+  default dark palette.
 
-- **Language / IDE:** Python, VS Code
-- **Orchestration:** LangChain, LangGraph
-- **LLMs:** Google Gemini (`gemini-2.5-flash`), Groq (`llama-3.1-8b-instant`)
-- **Embeddings:** Gemini Embeddings (`gemini-embedding-2`)
-- **Vector store:** ChromaDB (persistent, used internally by `Harvester`/`Synthesizer` for multi-doc retrieval)
-- **Web search:** Tavily API (free tier)
-- **PDF parsing:** PyMuPDF (`fitz`)
-- **Report export:** `python-docx`
-- **Config:** `python-dotenv`
+---
 
-Everything runs locally against free-tier APIs — no paid subscriptions anywhere in the pipeline.
-
-## Project Structure
+## Project structure
 
 ```
-.
-├── main.py                 # CLI entry point, LangGraph wiring & conditional routing
-├── vault.py                 # Shared memory object (GraphState) passed through the graph
+research-report-assistant/
+├── main.py                  # CLI entry point (one-shot pipeline)
+├── app.py                   # Streamlit chat app entry point
+├── vault.py                 # Shared state: short-term + long-term (ChromaDB) memory
+├── orchestrator.py          # Conversational session loop (chat app only)
+├── auth_db.py                # User accounts, sessions, conversation metadata (SQLite)
+├── conversation_memory.py    # Per-user chat history (ChromaDB)
+├── workflow_validator.py     # Validates + traces agent handoffs (CLI runs)
 ├── agents/
-│   ├── atlas.py              # Coordinator — mode detection & routing
-│   ├── pathfinder.py         # Planner — sub-questions / comparison dimensions
-│   ├── harvester.py          # Researcher — web search / PDF parse / chunk+embed
-│   ├── synthesizer.py        # Analyst — synthesis & comparison
-│   └── scribe.py             # Writer — final report drafting (3 prompt templates)
-├── chroma_db/                # Persistent vector store (created at runtime, multi-doc mode)
-├── .env                      # API keys (not committed)
+│   ├── atlas.py               # Mode detection / routing
+│   ├── pathfinder.py          # Planning (sub-questions / comparison dimensions)
+│   ├── harvester.py           # Web search, PDF parsing, memory-first search
+│   ├── synthesizer.py         # Analysis + synthesis (RAG-augmented for topic/single-doc)
+│   └── scribe.py               # Final report writing
+├── .streamlit/
+│   └── config.toml            # UI theme
 ├── requirements.txt
-└── README.md
+└── .env                      # API keys (not committed)
 ```
+
+---
 
 ## Setup
 
-1. **Clone the repo and create a virtual environment**
-   ```bash
-   python -m venv venv
-   source venv/bin/activate      # Windows: venv\Scripts\activate
-   ```
-
-2. **Install dependencies**
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-3. **Configure API keys** — create a `.env` file in the project root (see [Environment Variables](#environment-variables)).
-
-All three keys used below have generous free tiers and require no credit card.
-
-## Environment Variables
-
-Create a `.env` file in the project root:
-
-```env
-GOOGLE_API_KEY=your_gemini_api_key
-TAVILY_API_KEY=your_tavily_api_key
-GROQ_API_KEY=your_groq_api_key
+**1. Clone and enter the project, create a virtual environment:**
+```bash
+python -m venv venv
+# Windows
+.\venv\Scripts\Activate.ps1
+# macOS/Linux
+source venv/bin/activate
 ```
 
-`main.py` checks for all three keys at startup and exits early with a clear message if any are missing.
+**2. Install dependencies:**
+```bash
+pip install -r requirements.txt
+```
+
+**3. Add your API keys** in a `.env` file in the project root:
+```
+GROQ_API_KEY=your_groq_key
+GOOGLE_API_KEY=your_google_key
+TAVILY_API_KEY=your_tavily_key
+```
+All three services have free tiers. Groq and Gemini are used together deliberately — a
+dual-provider strategy to stay within free-tier quota limits rather than relying on one
+provider alone.
+
+---
 
 ## Usage
 
-**Topic Mode**
+### CLI (one-shot report)
 ```bash
-python main.py --topic "Impact of remote work on employee productivity" --out report.txt
-```
+# Topic research
+python main.py --topic "Research on RAG" --out report.txt
 
-**Single-Doc Mode**
+# Single document summary
+python main.py --docs "path/to/paper.pdf" --out summary.txt
+
+# Multi-document literature review
+python main.py --docs "paper1.pdf" "paper2.pdf" --out review.txt
+```
+Each run prints a live agent-by-agent trace, saves the report, and saves a
+`<out>_trace.json` workflow validation file alongside it.
+
+### Chat app
 ```bash
-python main.py --docs paper.pdf --out summary.txt
+streamlit run app.py
 ```
+Opens in your browser (usually `http://localhost:8501`). Register an account, start a new
+chat, and either type a topic (first message always runs full research) or attach PDFs with
+the `+` button in the chat bar. After that, ask follow-up questions naturally, or prefix a
+message with `research:` to force a fresh report mid-conversation.
 
-**Multi-Doc Mode**
-```bash
-python main.py --docs paper1.pdf paper2.pdf paper3.pdf --out review.txt
-```
+---
 
-The final report is printed to the console and saved to the file passed via `--out` (defaults to `report.txt`).
+## Tech stack
 
-## Output Format
+- **Language / orchestration:** Python, LangChain, LangGraph
+- **LLMs:** Groq (`llama-3.1-8b-instant`), Google Gemini (`gemini-2.5-flash`,
+  `gemini-embedding-2`)
+- **Search:** Tavily
+- **Vector memory:** ChromaDB (long-term research memory + per-user conversation memory)
+- **Document parsing:** PyMuPDF (PDF), python-docx
+- **Permanent storage:** SQLite (accounts, sessions, conversation metadata)
+- **UI:** Streamlit
 
-Each mode drives a dedicated `Scribe` prompt template, producing a structured Markdown report:
+---
 
-**Topic Mode**
-1. Executive Summary
-2. Introduction
-3. Key Research Themes
-4. Perspectives & Contradictions
-5. Trends / Applications
-6. Conclusion
-7. References `[1] [2] ...`
+## Milestone context
 
-*Narrative report with inline citations linking to a numbered reference list.*
+Built for Infosys Springboard 7.0. Milestone 3 (Agent Coordination & Memory Systems)
+objectives and how this project meets them:
 
-**Single-Doc Mode**
-1. Overview
-2. Methodology Explained
-3. Key Contributions
-4. Experimental Setup
-5. Results & Findings
-6. Internal Consistency Analysis
-7. Limitations
-8. Conclusion
+| Objective | Where |
+|---|---|
+| Specialized agents with defined roles | `agents/` — Atlas, Pathfinder, Harvester, Synthesizer, Scribe |
+| Agent communication & coordination | `vault.comm_log`, populated by every agent on handoff |
+| Short-term & long-term memory | `vault.py` (short-term) + ChromaDB via `save_to_long_term_memory` / `query_long_term_memory` (long-term) |
+| Validate collaborative workflow execution | `workflow_validator.py` — PASS/FAIL trace saved per run |
 
-*Pure per-section summary of one paper — no comparison table, no agreement/contradiction section.*
-
-**Multi-Doc Mode**
-1. Introduction
-2. Individual Paper Summaries
-3. Comparative Analysis Table
-4. Common Findings
-5. Contradictions / Differences
-6. Research Gaps
-7. Final Evaluation
-8. Conclusion
-
-*Literature-review-style comparison with a methodology/results table across all papers.*
+---
 
 ## Roadmap
 
-- **Phase 1 (in progress):** Upgrade `Synthesizer` from full-context stuffing to proper RAG — `similarity_search()` against ChromaDB with top-k retrieval and relevance scoring, plus a synthesis prompt that enforces grounding and citations
-- **Phase 2 (in progress):** Conversational follow-up interface after report generation — ChromaDB-first retrieval with a relevance threshold, Tavily fallback when context is insufficient, write-back of new information into ChromaDB, and session `chat_history` held in Vault
-- **Future / enterprise upgrade:** FastAPI wrapper, Docker packaging, LangSmith observability, pytest CI, async concurrency, PostgreSQL for run history & audit trails, object storage for uploaded documents
-
-## Acknowledgements
-
-Built as a capstone project for **Infosys Springboard 7.0**.
+- LLM-based intent classification for chat routing (currently a simple first-message /
+  explicit-prefix rule)
+- FastAPI wrapper for programmatic access
+- Docker containerization
