@@ -15,4 +15,10 @@ def detect_mode(input_data):
 def atlas_route(vault):
     vault.mode = detect_mode(vault.input_data)
     print(f"[Atlas] Mode detected: {vault.mode}")
+    vault.log_message(
+        from_agent="Atlas",
+        to_agent="Pathfinder",
+        action="mode_routed",
+        detail=f"mode={vault.mode}"
+    )
     return vault.mode

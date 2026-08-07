@@ -48,4 +48,17 @@ def pathfinder_plan(vault):
 
     vault.subtasks = subtasks
     print(f"[Pathfinder] Plan: {vault.subtasks}")
+
+    next_agent = {
+        "topic": "Harvester (web search)",
+        "single_doc": "Harvester (single doc)",
+        "multi_doc": "Harvester (multi doc)"
+    }.get(vault.mode, "Harvester")
+
+    vault.log_message(
+        from_agent="Pathfinder",
+        to_agent=next_agent,
+        action="plan_ready",
+        detail=f"{len(subtasks)} subtasks/dimensions"
+    )
     return vault.subtasks

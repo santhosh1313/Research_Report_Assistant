@@ -3,9 +3,6 @@ from tavily import TavilyClient
 from dotenv import load_dotenv
 import fitz  # PyMuPDF
 import os
-# from langchain_google_genai import GoogleGenerativeAIEmbeddings
-# from langchain_text_splitters import RecursiveCharacterTextSplitter
-# from langchain_chroma import Chroma
 
 load_dotenv()
 
@@ -14,39 +11,10 @@ tavily = TavilyClient(
     api_key=os.getenv("TAVILY_API_KEY")
 )
 
-# Gemini Embeddings
-# embeddings = GoogleGenerativeAIEmbeddings(
-#     model="models/gemini-embedding-2",
-#     google_api_key=os.getenv("GOOGLE_API_KEY")
-# )
-
-# # Text Splitter
-# splitter = RecursiveCharacterTextSplitter(
-#     chunk_size=1000,
-#     chunk_overlap=100
-# )
-
 
 class HarvesterError(Exception):
     """Raised when a Harvester tool invocation fails in a way the pipeline cannot recover from."""
     pass
-
-
-# Common Vector DB function for all modes
-# def save_to_vector_db(texts, metadatas):
-#     if not texts:
-#         raise ValueError("No text found to store in Vector DB")
-#     try:
-#         vector_store = Chroma.from_texts(
-#             texts=texts,
-#             embedding=embeddings,
-#             metadatas=metadatas,
-#             persist_directory="./chroma_db",
-#             collection_name="research_assistant"
-#         )
-#     except Exception as e:
-#         raise HarvesterError(f"Failed to write to ChromaDB: {e}") from e
-#     return vector_store
 
 
 # =================================================
@@ -106,8 +74,18 @@ def harvester_web_search(vault):
 
     vault.web_results = texts
 
+    # Long-term memory: persist so a future run on a related topic can recall these.
+    vault.save_to_long_term_memory(texts, metadatas)
+
     print(
         f"[Harvester] Collected {len(texts)} web results")
+
+    vault.log_message(
+        from_agent="Harvester",
+        to_agent="Synthesizer",
+        action="web_results_ready",
+        detail=f"{len(texts)} facts from {len(vault.subtasks)} subtasks ({len(failed_queries)} queries failed)"
+    )
 
 
 
@@ -157,8 +135,18 @@ def harvester_parse_single(vault):
 
     vault.document_text = full_text
 
+    # Long-term memory: persist so this paper's content is recallable in future runs.
+    vault.save_to_long_term_memory(texts, metadatas)
+
     print(
         f"[Harvester] Extracted {len(texts)} pages"
+    )
+
+    vault.log_message(
+        from_agent="Harvester",
+        to_agent="Synthesizer",
+        action="document_parsed",
+        detail=f"{len(texts)} pages extracted from {path}"
     )
     return full_text
 
@@ -193,6 +181,12 @@ def harvester_embed_multi(vault):
         texts.append(
             f"\n\n===== {os.path.basename(path)} =====\n\n{full_text}"
         )
+        metadatas.append(
+            {
+                "source": path,
+                "mode": "multi_document"
+            }
+        )
 
     if not texts:
         raise HarvesterError(
@@ -202,8 +196,21 @@ def harvester_embed_multi(vault):
 
     vault.multi_doc_text = "\n\n".join(texts)
 
+    # Long-term memory: persist per-document text. Note Synthesizer still uses
+    # the full multi_doc_text directly for this mode (it already has complete
+    # context), so retrieval isn't wired into synthesis here — this just makes
+    # these documents recallable by topic/single-doc runs later.
+    vault.save_to_long_term_memory(texts, metadatas)
+
     print(
         f"[Harvester] Parsed {len(texts)} documents"
+    )
+
+    vault.log_message(
+        from_agent="Harvester",
+        to_agent="Synthesizer",
+        action="documents_parsed",
+        detail=f"{len(texts)} documents parsed, {len(skipped_files)} skipped"
     )
 
     return vault.multi_doc_text

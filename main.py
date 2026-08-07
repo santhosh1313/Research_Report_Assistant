@@ -16,6 +16,7 @@ from agents.harvester import (
 )
 from agents.synthesizer import synthesizer_run, SynthesizerError
 from agents.scribe import scribe_write, ScribeError
+from workflow_validator import validate_workflow, save_trace, print_trace_summary
 
 
 class GraphState(TypedDict):
@@ -156,3 +157,10 @@ if __name__ == "__main__":
         f.write(final_report)
 
     print(f"\nReport saved to {args.out}")
+
+    # Milestone 3 — validate and record that the agents actually
+    # collaborated as expected, and save the evidence alongside the report.
+    passed, trace_report = validate_workflow(result["vault"])
+    print_trace_summary(trace_report)
+    trace_path = save_trace(trace_report, path=os.path.splitext(args.out)[0] + "_trace.json")
+    print(f"Workflow trace saved to {trace_path}")

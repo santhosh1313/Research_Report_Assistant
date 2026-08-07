@@ -205,4 +205,11 @@ def scribe_write(vault):
 
     vault.final_report = content
     print(f"[Scribe] {vault.mode} report drafted")
+
+    vault.log_message(
+        from_agent="Scribe",
+        to_agent="Pipeline",
+        action="report_complete",
+        detail=f"{len(content)} chars, mode={vault.mode}"
+    )
     return vault.final_report
